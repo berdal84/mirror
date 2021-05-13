@@ -3,8 +3,9 @@ mirror is a lightweight C++ reflection framework that aims at providing a simple
 
 ## Manifesto (enforced in this framework, but actually applies to any coding project)
 - Simple ideas should be simple to write.
+- If you are not using it, it should not do anything.
 - Redundant declaration is evil and should be avoided at all cost.
-- A puppy dies each time a C++ developer writes yet another piece of non-generic serialization code in 2020.
+- A puppy dies each time a C++ developer writes yet another piece of non-generic serialization code in 2021.
 
 ## How to install
 ### Using CMAKE
@@ -13,7 +14,7 @@ mirror is a lightweight C++ reflection framework that aims at providing a simple
 - Add `${MIRROR_INCLUDE_DIRS}` to your target include folders list.
 
 ### Manually
-- Compile mirror.cpp alongside your project
+- Compile mirror_base.cpp,  alongside your project
 - (Optional) Also compile the source files of the tools you intend to use from the "Tools" folder
 
 ## How to declare
@@ -25,16 +26,6 @@ mirror is a lightweight C++ reflection framework that aims at providing a simple
 - Here is an example declaration:
 
 ```C++
-struct MyStruct
-{
-	int a;
-
-	MIRROR_CLASS(MyStruct)
-	(
-		MIRROR_MEMBER(a)()
-	)
-};
-
 class MyClass : public MyParent
 {
 	bool a;
@@ -44,10 +35,13 @@ class MyClass : public MyParent
 	std::vector<std::vector<std::string>> e;
 	std::string f;
 	Enum g;
+	bool (*e)(int, float, char*);
 
 	MIRROR_CLASS(MyClass)
 	(
 		MIRROR_PARENT(MyParent)
+
+		MIRROR_FACTORY() // Declare a factory that will be able to call the no parameter constructor directly from the Class `instantiate()` method
 
 		MIRROR_MEMBER(a)()
 		MIRROR_MEMBER(b)(Transient)
@@ -56,14 +50,41 @@ class MyClass : public MyParent
 		MIRROR_MEMBER(e)()
 		MIRROR_MEMBER(f)(Deprecated)
 		MIRROR_MEMBER(g)()
+		MIRROR_MEMBER(e)()
 	)
 };
+
+struct MyStruct
+{
+	int a;
+
+	MIRROR_CLASS_NOVIRTUAL(MyStruct) // Declare your classes that way if you don't want to make it virtual
+	(
+		MIRROR_MEMBER(a)()
+	)
+};
+
+enum MyEnum
+{
+	MyEnum_1,
+	MyEnum_2,
+	MyEnum_3 = 5,
+};
+
+MIRROR_ENUM(MyEnum)
+(
+	MIRROR_ENUM_VALUE(MyEnum_1)()
+	MIRROR_ENUM_VALUE(MyEnum_2)()
+	MIRROR_ENUM_VALUE(MyEnum_3)()
+)
 ```
 
 ## How to use
-- Any reflected class gains a public `GetClass()` static function that allow to iterate through reflected members, access their types and find their address on given instances.
+- Any reflected class gains a public `GetClass()` static function that allow to iterate through reflected members, access their types and find their address on given instances. You can also access the reflected type one any type from the oustide with the function `mirror::GetTypeDesc<T>()` or `mirror::GetTypeDesc(myVariable)`
 - Classes inheritance schemes can be checked at runtime by using the `Class::isChildOf` method.
 - A cheap dynamic cast is also available by using the static `mirror::Cast<TargetType>(SourceType)` method.
+- You can access a static function return and arguments types by calling `mirror::GetStaticFunctionType()` on a static function pointer.
+- You can access an enum type, convert value to string, string to value and access a list of the enum's values with the templated method `mirror::GetEnum<MyEnum>()`.
 
 ## Tools
 Mirror comes with a set of tools that works on reflected classes and can leverage the power of reflection.

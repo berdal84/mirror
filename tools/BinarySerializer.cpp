@@ -81,7 +81,7 @@ namespace mirror
 		m_isReading = false;
 	}
 
-	void BinarySerializer::_serializeEntry(FDataBuffer* _dataBuffer, const char* _id, void* _object, const TypeDesc* _typeDesc)
+	void BinarySerializer::_serializeEntry(FDataBuffer* _dataBuffer, const char* _id, void* _object, const TypeDesc* _typeDesc, const MetaDataSet* _metaDataSet)
 	{
 		assert(_dataBuffer);
 		assert(_id);
@@ -91,7 +91,7 @@ namespace mirror
 		if (m_isWriting)
 		{
 			FDataBuffer* entryDataBuffer = _getDataBufferFromPool();
-			_serialize(entryDataBuffer, _object, _typeDesc);
+			_serialize(entryDataBuffer, _object, _typeDesc, _metaDataSet);
 
 			_dataBuffer->write(_id, strlen(_id) + 1);
 			_dataBuffer->write(entryDataBuffer->dataLength);
@@ -117,14 +117,14 @@ namespace mirror
 				else
 				{
 					FDataBuffer entryDataBuffer(_dataBuffer->data + _dataBuffer->cursor, payloadSize);
-					_serialize(&entryDataBuffer, _object, _typeDesc);
+					_serialize(&entryDataBuffer, _object, _typeDesc, _metaDataSet);
 					break;
 				}
 			}
 		}
 	}
 
-	void BinarySerializer::_serialize(FDataBuffer* _dataBuffer, void* _object, const TypeDesc* _typeDesc)
+	void BinarySerializer::_serialize(FDataBuffer* _dataBuffer, void* _object, const TypeDesc* _typeDesc, const MetaDataSet* _metaDataSet)
 	{
 		assert(_dataBuffer);
 		assert(_object);
@@ -168,6 +168,45 @@ namespace mirror
 		case Type_double:
 			_serialize<double>(_dataBuffer, _object);
 			break;
+		case Type_Enum:
+		{
+			const Enum* enumTypeDesc = static_cast<const Enum*>(_typeDesc);
+
+			if (m_isWriting)
+			{
+				int64_t value;
+				switch (enumTypeDesc->getSubType()->getType())
+				{
+				case Type_int8: value = static_cast<int64_t>(*reinterpret_cast<int8_t*>(_object)); break;
+				case Type_int16: value = static_cast<int64_t>(*reinterpret_cast<int16_t*>(_object)); break;
+				case Type_int32: value = static_cast<int64_t>(*reinterpret_cast<int32_t*>(_object)); break;
+				case Type_int64: value = static_cast<int64_t>(*reinterpret_cast<int64_t*>(_object)); break;
+				default: assert(false); break;
+				}
+
+				const char* str = "";
+				if (enumTypeDesc->getStringFromValue(value, str))
+				{
+					size_t length = strlen(str);
+					_dataBuffer->write(str, length + 1);
+				}
+			}
+			else if (m_isReading)
+			{
+				char* str = reinterpret_cast<char*>(_dataBuffer->data + _dataBuffer->cursor);
+				int64_t value;
+				enumTypeDesc->getValueFromString(str, value);
+
+				switch (enumTypeDesc->getSubType()->getType())
+				{
+				case Type_int8: *reinterpret_cast<int8_t*>(_object) = static_cast<int8_t>(value); break;
+				case Type_int16: *reinterpret_cast<int16_t*>(_object) = static_cast<int16_t>(value); break;
+				case Type_int32: *reinterpret_cast<int32_t*>(_object) = static_cast<int32_t>(value); break;
+				case Type_int64: *reinterpret_cast<int64_t*>(_object) = static_cast<int64_t>(value); break;
+				}
+			}
+		}
+		break;
 		case Type_std_string:
 		{
 			std::string* stringPtr = reinterpret_cast<std::string*>(_object);
@@ -212,7 +251,7 @@ namespace mirror
 				clss->getMembers(members);
 				for (const ClassMember* member : members)
 				{
-					_serializeEntry(instanceDataBuffer, member->getName(), member->getInstanceMemberPointer(_object), member->getType());
+					_serializeEntry(instanceDataBuffer, member->getName(), member->getInstanceMemberPointer(_object), member->getType(), &member->GetMetaDataSet());
 				}
 				_dataBuffer->write(instanceDataBuffer->dataLength);
 				_dataBuffer->write(instanceDataBuffer->data, instanceDataBuffer->dataLength);
@@ -227,9 +266,76 @@ namespace mirror
 				clss->getMembers(members);
 				for (const ClassMember* member : members)
 				{
-					_serializeEntry(&instanceDataBuffer, member->getName(), member->getInstanceMemberPointer(_object), member->getType());
+					_serializeEntry(&instanceDataBuffer, member->getName(), member->getInstanceMemberPointer(_object), member->getType(), &member->GetMetaDataSet());
 				}
 				_dataBuffer->cursor += dataLength;
+			}
+		}
+		break;
+		case Type_Pointer:
+		{
+			const PointerTypeDesc* pointerTypeDesc = static_cast<const PointerTypeDesc*>(_typeDesc);
+			if (_metaDataSet && _metaDataSet->findMetaData("OwnedPointer"))
+			{
+				const TypeDesc* subType = pointerTypeDesc->getSubType();
+				if (subType->hasFactory())
+				{
+					void** pointerPtr = reinterpret_cast<void**>(_object);
+					bool isValidPointer;
+					if (m_isWriting)
+					{
+						isValidPointer = *pointerPtr != nullptr;
+						_dataBuffer->write(isValidPointer);
+						if (isValidPointer)
+						{
+							if (subType->getType() == Type_Class)
+							{
+								subType = reinterpret_cast<const Class*>(subType)->unsafeVirtualGetClass(*pointerPtr);
+								std::string className = subType->getName();
+								_dataBuffer->write(className);
+							}
+							_serialize(_dataBuffer, *pointerPtr, subType, nullptr);
+						}
+					}
+					else if (m_isReading)
+					{
+						// @TODO(2021/02/15|Remi): May leak the previous value of the pointer. What should we do ? Whose responsibility is it ?
+						// This is also probably related to the custom allocator subject
+
+						_dataBuffer->read(isValidPointer);
+						if (isValidPointer)
+						{
+							if (subType->getType() == Type_Class)
+							{
+								std::string className;
+								_dataBuffer->read(className);
+								subType = mirror::FindTypeByName(className.c_str());
+								assert(subType);
+							}
+
+							*pointerPtr = subType->instantiate();
+							_serialize(_dataBuffer, *pointerPtr, subType, nullptr);
+						}
+						else
+						{
+							*pointerPtr = nullptr;
+						}
+					}
+				}
+			}
+			else
+			{
+				// @TODO(2021/02/15|Remi): Linkage with other pointers of this serialization
+			}
+		}
+		break;
+		case Type_FixedSizeArray:
+		{
+			const FixedSizeArrayTypeDesc* fixedSizeArrayTypeDesc = static_cast<const FixedSizeArrayTypeDesc*>(_typeDesc);
+			const TypeDesc* subType = fixedSizeArrayTypeDesc->getSubType();
+			for (size_t i = 0; i < fixedSizeArrayTypeDesc->getElementCount(); ++i)
+			{
+				_serialize(_dataBuffer, (uint8_t*)(_object) + i * subType->getSize(), subType, nullptr);
 			}
 		}
 		break;

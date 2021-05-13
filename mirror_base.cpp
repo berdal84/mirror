@@ -1,4 +1,6 @@
 #include "mirror.h"
+#include "mirror_base.h"
+
 
 #include <cstring>
 #include <cassert>
@@ -6,39 +8,10 @@
 
 namespace mirror
 {
-	ClassSet g_classSet;
 
-	MetaData::MetaData(const char* _name, const char* _data)
-		: m_name(_name)
-		, m_data(_data)
-	{
+// ------------- TOOLS -----------------
 
-	}
-
-	const char* MetaData::getName() const
-	{
-		return m_name.c_str();
-	}
-
-	bool MetaData::asBool() const
-	{
-		return false;
-	}
-
-	int MetaData::asInt() const
-	{
-		return 0;
-	}
-
-	float MetaData::asFloat() const
-	{
-		return 0.f;
-	}
-
-	const char* MetaData::asString() const
-	{
-		return m_data.c_str();
-	}
+#define ALLOCATE_AND_COPY_STRING(_dst, _src) { _dst = (char*)malloc(strlen(_src) + 1); strcpy(_dst, _src); }
 
 #define OFFSET_BASIS	2166136261
 #define FNV_PRIME		16777619
@@ -68,7 +41,7 @@ namespace mirror
 		return Hash32(_str, strlen(_str));
 	}
 
-	void sanitizeMetaDataString(char* _buf)
+	void SanitizeMetaDataString(char* _buf)
 	{
 		assert(_buf);
 
@@ -89,7 +62,7 @@ namespace mirror
 				{
 					lastChar = cur + 1;
 				}
-				
+
 			}
 		}
 
@@ -98,10 +71,57 @@ namespace mirror
 		_buf[len] = 0;
 	}
 
-	ClassMember::ClassMember(const char* _name, size_t _offset, TypeDesc* _type, const char* _metaDataString)
-		: m_name(_name)
-		, m_offset(_offset)
-		, m_type(_type)
+// ------------- !TOOLS -----------------
+
+	TypeSet g_typeSet;
+	TypeSet* GetTypeSet()
+    {
+        return &g_typeSet;
+    }
+
+	TypeDesc* FindTypeByName(const char* _name)
+	{
+		return ::mirror::g_typeSet.findTypeByName(_name);
+	}
+
+	MetaData::MetaData(const char* _name, const char* _data)
+	{
+		ALLOCATE_AND_COPY_STRING(m_name, _name);
+        ALLOCATE_AND_COPY_STRING(m_data, _data);
+	}
+
+	MetaData::~MetaData()
+    {
+        free(m_name);
+        free(m_data);
+    }
+
+	const char* MetaData::getName() const
+	{
+		return m_name;
+	}
+
+	bool MetaData::asBool() const
+	{
+		return false;
+	}
+
+	int MetaData::asInt() const
+	{
+		return 0;
+	}
+
+	float MetaData::asFloat() const
+	{
+		return 0.f;
+	}
+
+	const char* MetaData::asString() const
+	{
+		return m_data;
+	}
+
+	MetaDataSet::MetaDataSet(const char* _metaDataString)
 	{
 		// Parse meta data
 		assert(_metaDataString);
@@ -141,8 +161,8 @@ namespace mirror
 				}
 				valueBuf[valueLen] = 0;
 
-				sanitizeMetaDataString(keyBuf);
-				sanitizeMetaDataString(valueBuf);
+				SanitizeMetaDataString(keyBuf);
+				SanitizeMetaDataString(valueBuf);
 
 				MetaData metaData(keyBuf, valueBuf);
 				m_metaData.insert(std::make_pair(HashCString(metaData.getName()), metaData));
@@ -157,20 +177,85 @@ namespace mirror
 		}
 	}
 
+	MetaDataSet::MetaDataSet(const MetaDataSet& _other)
+	{
+		m_metaData = _other.m_metaData;
+	}
+
+	const mirror::MetaData* MetaDataSet::findMetaData(const char* _key) const
+	{
+		if (_key == nullptr)
+			return nullptr;
+
+		uint32_t hash = HashCString(_key);
+		auto it = m_metaData.find(hash);
+		if (it == m_metaData.end())
+			return nullptr;
+
+		return &it->second;
+	}
+
+	TypeDesc::TypeDesc(Type _type, const char* _name, VirtualTypeWrapper* _virtualTypeWrapper)
+		: m_type(_type)
+		, m_virtualTypeWrapper(_virtualTypeWrapper)
+	{
+		ALLOCATE_AND_COPY_STRING(m_name, _name);
+	}
+
+	TypeDesc::~TypeDesc()
+	{
+		if (m_virtualTypeWrapper) delete m_virtualTypeWrapper;
+		free(m_name);
+	}
+
+	bool TypeDesc::hasFactory() const
+	{
+		return m_virtualTypeWrapper->hasFactory();
+	}
+
+	void* TypeDesc::instantiate() const
+	{
+		return m_virtualTypeWrapper->instantiate();
+	}
+
+	void TypeDesc::setName(const char* _name)
+	{
+		free(m_name);
+		ALLOCATE_AND_COPY_STRING(m_name, _name);
+	}
+
+	ClassMember::ClassMember(const char* _name, size_t _offset, TypeID _type, const char* _metaDataString)
+		: m_offset(_offset)
+		, m_type(_type)
+		, m_metaDataSet(_metaDataString)
+	{
+		ALLOCATE_AND_COPY_STRING(m_name, _name);
+	}
+
+	ClassMember::~ClassMember()
+	{
+		free(m_name);
+	}
+
+	TypeDesc* ClassMember::getType() const
+	{
+		return GetTypeSet()->findTypeByID(m_type);
+	}
+
 	void* ClassMember::getInstanceMemberPointer(void* _classInstancePointer) const
 	{
 		return reinterpret_cast<uint8_t*>(_classInstancePointer) + m_offset;
 	}
 
-	mirror::MetaData* ClassMember::getMetaData(const char* _key) const
+	Class::Class(const char* _name, VirtualTypeWrapper* _virtualTypeWrapper, const char* _metaDataString)
+		: Class(_name, _virtualTypeWrapper, MetaDataSet(_metaDataString))
 	{
-		return nullptr;
+
 	}
 
-	Class::Class(const char* _name, size_t _typeHash)
-		: TypeDesc(Type_Class)
-		, m_typeHash(_typeHash)
-		, m_name(_name)
+	Class::Class(const char* _name, VirtualTypeWrapper* _virtualTypeWrapper, const MetaDataSet& _metaDataSet)
+		: TypeDesc(Type_Class, _name, _virtualTypeWrapper)
+		, m_metaDataSet(_metaDataSet)
 	{
 
 	}
@@ -196,6 +281,26 @@ namespace mirror
 		}
 	}
 
+	mirror::ClassMember* Class::findMemberByName(const char* _name, bool _includeInheritedMembers) const
+	{
+		uint32_t nameHash = HashCString(_name);
+		auto it = m_membersByName.find(nameHash);
+		if (it != m_membersByName.end())
+		{
+			return it->second;
+		}
+		if (_includeInheritedMembers)
+		{
+			for (Class* parent : m_parents)
+			{
+				ClassMember* member = parent->findMemberByName(_name);
+				if (member)
+					return member;
+			}
+		}
+		return nullptr;
+	}
+
 	bool Class::isChildOf(const Class* _class, bool _checkSelf) const
 	{
 		if (_class == this)
@@ -212,11 +317,12 @@ namespace mirror
 	{
 		assert(_member);
 		assert(std::find(m_members.begin(), m_members.end(), _member) == m_members.end());
-		// Checks if a member with the same name does not already exists
-		assert(std::find_if(m_members.begin(), m_members.end(), [_member](const ClassMember* _m) { return _member->m_name == _m->m_name; }) == m_members.end());
+		uint32_t nameHash = HashCString(_member->getName());
+		assert(m_membersByName.find(nameHash) == m_membersByName.end());
 
 		_member->m_class = this;
 		m_members.push_back(_member);
+		m_membersByName.insert(std::make_pair(nameHash, _member));
 	}
 
 	void Class::addParent(Class* _parent)
@@ -229,71 +335,164 @@ namespace mirror
 		_parent->m_children.insert(this);
 	}
 
-	ClassSet::~ClassSet()
+	mirror::Class* Class::unsafeVirtualGetClass(void* _object) const
 	{
-		for (auto& pair : m_classesByNameHash)
+		return getVirtualTypeWrapper()->unsafeVirtualGetClass(_object);
+	}
+
+	TypeSet::~TypeSet()
+	{
+		for (TypeDesc* type : m_types)
 		{
-			delete pair.second;
+			delete type;
 		}
-		m_classesByNameHash.clear();
-		m_classesByTypeHash.clear();
+		m_types.clear();
+		m_typesByID.clear();
+		m_typesByName.clear();
 	}
 
-	mirror::Class* ClassSet::findClassByName(const char* _className)
+	TypeDesc* TypeSet::findTypeByID(TypeID _typeID)
 	{
-		auto it = m_classesByNameHash.find(HashCString(_className));
-		return it != m_classesByNameHash.end() ? it->second : nullptr;
+		auto it = m_typesByID.find(_typeID);
+		return it != m_typesByID.end() ? it->second : nullptr;
 	}
 
-	Class* ClassSet::findClassByTypeHash(size_t _classTypeHash)
+	mirror::TypeDesc* TypeSet::findTypeByName(const char* _name)
 	{
-		auto it = m_classesByTypeHash.find(_classTypeHash);
-		return it != m_classesByTypeHash.end() ? it->second : nullptr;
+		uint32_t nameHash = HashCString(_name);
+		auto it = m_typesByName.find(nameHash);
+		return it != m_typesByName.end() ? it->second : nullptr;
 	}
 
-	void ClassSet::addClass(Class* _class)
+	void TypeSet::addType(TypeDesc* _type)
 	{
-		// Checks if a class with the same name/typehash does not already exists
-		assert(_class);
-		uint32_t nameHash = HashCString(_class->getName());
-		assert(m_classesByNameHash.find(nameHash) == m_classesByNameHash.end());
-		assert(m_classesByTypeHash.find(_class->getTypeHash()) == m_classesByTypeHash.end());
-		assert(m_classes.find(_class) == m_classes.end());
+		assert(_type);
+		uint32_t nameHash = HashCString(_type->getName());
 
-		m_classesByNameHash.insert(std::make_pair(nameHash, _class));
-		m_classesByTypeHash.insert(std::make_pair(_class->getTypeHash(), _class));
-		m_classes.emplace(_class);
+		// Checks if a type with the same typeID or namehash does not already exists
+		assert(m_typesByID.find(_type->getTypeID()) == m_typesByID.end());
+		assert(m_typesByName.find(nameHash) == m_typesByName.end());
+		assert(m_types.find(_type) == m_types.end());
+
+		m_typesByID.insert(std::make_pair(_type->getTypeID(), _type));
+		m_typesByName.insert(std::make_pair(nameHash, _type));
+		m_types.emplace(_type);
 	}
 
-	void ClassSet::removeClass(Class* _class)
+	void TypeSet::removeType(TypeDesc* _type)
 	{
-		assert(_class);
+		assert(_type);
 
-		// Checks if a class with the same name/typehash already exists
-		auto it = m_classesByNameHash.find(HashCString(_class->getName()));
-		assert(it != m_classesByNameHash.end());
-		m_classesByNameHash.erase(it);
-
-		auto it2 = m_classesByTypeHash.find(_class->getTypeHash());
-		assert(it2 != m_classesByTypeHash.end());
-		m_classesByTypeHash.erase(it2);
-
-		auto it3 = m_classes.find(_class);
-		assert(it3 != m_classes.end());
-		m_classes.erase(it3);
+		// Checks if a type with the same typeID or namehash already exists
+		{
+			auto it = m_typesByID.find(_type->getTypeID());
+			assert(it != m_typesByID.end());
+			m_typesByID.erase(it);
+		}
+		
+		{
+			uint32_t nameHash = HashCString(_type->getName());
+			auto it = m_typesByName.find(nameHash);
+			assert(it != m_typesByName.end());
+			m_typesByName.erase(it);
+		}
+		
+		{
+			auto it = m_types.find(_type);
+			assert(it != m_types.end());
+			m_types.erase(it);
+		}
 	}
 
-	const std::set<Class*>& ClassSet::GetClasses() const
+	const std::set<TypeDesc*>& TypeSet::getTypes() const
 	{
-		return m_classes;
+		return m_types;
 	}
 
-	PointerTypeDesc::PointerTypeDesc(TypeDesc* _subType)
-		: TypeDesc(Type_Pointer)
+	PointerTypeDesc::PointerTypeDesc(TypeID _subType, VirtualTypeWrapper* _virtualTypeWrapper)
+		: TypeDesc(Type_Pointer, "", _virtualTypeWrapper)
 		, m_subType(_subType)
 	{
-		
+		setName((std::string("pointer_") + GetTypeSet()->findTypeByID(_subType)->getName()).c_str());
 	}
+
+	TypeDesc* PointerTypeDesc::getSubType() const { return GetTypeSet()->findTypeByID(m_subType); }
+
+
+	FixedSizeArrayTypeDesc::FixedSizeArrayTypeDesc(TypeID _subType, size_t _elementCount, VirtualTypeWrapper* _virtualTypeWrapper)
+		: TypeDesc(Type_FixedSizeArray, "fixed_size_array", _virtualTypeWrapper)
+		, m_subType(_subType)
+		, m_elementCount(_elementCount)
+	{
+
+	}
+
+	TypeDesc* FixedSizeArrayTypeDesc::getSubType() const
+	{
+		return GetTypeSet()->findTypeByID(m_subType);
+	}
+
+	Enum::Enum(const char* _name, VirtualTypeWrapper* _virtualTypeWrapper, TypeDesc* _subType)
+		: TypeDesc(Type_Enum, _name, _virtualTypeWrapper)
+		, m_subType(_subType ? _subType : TypeDescGetter<int>::Get())
+	{
+
+	}
+
+	const std::vector<EnumValue*>& Enum::getValues() const
+	{
+		return m_values;
+	}
+
+	void Enum::addValue(EnumValue* _value)
+	{
+		assert(_value != nullptr);
+		assert(std::find(m_values.begin(), m_values.end(), _value) == m_values.end());
+		size_t hash = HashCString(_value->getName());
+		assert(m_valuesByNameHash.find(hash) == m_valuesByNameHash.end());
+
+		m_values.push_back(_value);
+		m_valuesByNameHash.insert(std::make_pair(hash, _value));
+	}
+
+	EnumValue::EnumValue(const char* _name, int64_t _value)
+		: m_value(_value)
+	{
+		ALLOCATE_AND_COPY_STRING(m_name, _name)
+	}
+
+	EnumValue::~EnumValue()
+	{
+		free(m_name);
+	}
+
+	const char* EnumValue::getName() const
+	{
+		return m_name;
+	}
+
+	int64_t EnumValue::getValue() const
+	{
+		return m_value;
+	}
+
+#define TYPEDESCINITIALIZER_DEFINE(_type, _hasFactory, _mirrorType) TypeDescInitializer<_type, _hasFactory> g_##_type##TypeInitializer(_mirrorType, #_type)
+
+	TYPEDESCINITIALIZER_DEFINE(void, false, Type_void);
+	TYPEDESCINITIALIZER_DEFINE(bool, true, Type_bool);
+	TYPEDESCINITIALIZER_DEFINE(char, true, Type_char);
+	TYPEDESCINITIALIZER_DEFINE(int8_t, true, Type_int8);
+	TYPEDESCINITIALIZER_DEFINE(int16_t, true, Type_int16);
+	TYPEDESCINITIALIZER_DEFINE(int32_t, true, Type_int32);
+	TYPEDESCINITIALIZER_DEFINE(int64_t, true, Type_int64);
+	TYPEDESCINITIALIZER_DEFINE(uint8_t, true, Type_uint8);
+	TYPEDESCINITIALIZER_DEFINE(uint16_t, true, Type_uint16);
+	TYPEDESCINITIALIZER_DEFINE(uint32_t, true, Type_uint32);
+	TYPEDESCINITIALIZER_DEFINE(uint64_t, true, Type_uint64);
+	TYPEDESCINITIALIZER_DEFINE(float, true, Type_float);
+	TYPEDESCINITIALIZER_DEFINE(double, true, Type_double);
+
+#undef TYPEDESCINITIALIZER_DEFINE
 
 }
 

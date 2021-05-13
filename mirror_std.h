@@ -1,6 +1,6 @@
 #pragma once
 
-#include <mirror_base.h>
+#include "mirror_base.h"
 
 namespace mirror
 {
@@ -8,7 +8,7 @@ namespace mirror
 	{
 	public:
 
-		StdVectorTypeDesc() : TypeDesc(Type_std_vector) {}
+		StdVectorTypeDesc(VirtualTypeWrapper* _virtualTypeWrapper) : TypeDesc(Type_std_vector, "std::vector", _virtualTypeWrapper) {}
 
 		virtual void instanceResize(void* _instance, size_t _size) const = 0;
 		virtual size_t instanceSize(void* _instance) const = 0;
@@ -16,7 +16,7 @@ namespace mirror
 		TypeDesc* getSubType() const { return m_subType; }
 
 	protected:
-		TypeDesc* m_subType;
+		TypeDesc* m_subType = nullptr;
 	};
 	template <typename T>
 	class TStdVectorTypeDesc : public StdVectorTypeDesc
@@ -31,8 +31,8 @@ namespace mirror
 		virtual void* instanceGetDataPointerAt(void* _instance, size_t _index) const override;
 	};
 
-	template <> struct TypeDescGetter<std::string> { static TypeDesc* Get() { static TypeDesc s_typeDesc = TypeDesc(Type_std_string); return &s_typeDesc; } };
-	template <typename T> struct TypeDescGetter<std::vector<T>> { static TypeDesc* Get() { static TStdVectorTypeDesc<T> s_vectorTypeDesc; return &s_vectorTypeDesc; } };
+	template <> struct TypeDescGetter<std::string> { static TypeDesc* Get() { static TypeDesc s_typeDesc = TypeDesc(Type_std_string, "std::string", new TVirtualTypeWrapper<std::string, true>()); return &s_typeDesc; } };
+	template <typename T> struct TypeDescGetter<std::vector<T>> { static TypeDesc* Get() { static TStdVectorTypeDesc<T> s_typeDesc(new TVirtualTypeWrapper<std::string, true>()); return &s_typeDesc; } };
 }
 
 // INL
